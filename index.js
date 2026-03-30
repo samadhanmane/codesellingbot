@@ -1632,7 +1632,8 @@ bot.action(/^(admin:accept:)/, async (ctx) => {
   const reqQty = Number(order.quantity) || 1;
   const claimed = await claimNCodes(order.category, orderId, reqQty);
 
-  if (claimed.length !== reqQty) {
+  // Only treat as out-of-stock if we could not claim even a single code.
+  if (claimed.length === 0) {
     // Release any claimed codes back to stock.
     const ids = claimed.map((c) => c._id);
     await releaseCodesByIds(ids);
