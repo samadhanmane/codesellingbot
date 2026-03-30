@@ -1941,6 +1941,7 @@ bot.command("start_admin", async (ctx) => {
     [Markup.button.callback("Set Category Prices", "admin:config:prices")],
     [Markup.button.callback("Upload Payment QR (photo)", "admin:config:qr")],
     [Markup.button.callback("Upload Codes (1 per line)", "admin:config:codes")],
+    [Markup.button.callback("🧹 Empty Codes", "admin:empty")],
     [Markup.button.callback("🕒 Pending Requests", "admin:pending")],
     [Markup.button.callback("View last payments", "admin:view:history")],
     [Markup.button.callback("Export payments (CSV)", "admin:export")],
@@ -1993,6 +1994,53 @@ bot.action("admin:pending", async (ctx) => {
         });
       }
     } catch (_) {}
+  }
+});
+
+bot.action("admin:empty", async (ctx) => {
+  if (ctx.from.id !== ADMIN_CHAT_ID) return ctx.answerCbQuery("Not allowed.");
+  await ctx.answerCbQuery();
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback("✅ Yes, delete ALL codes", "admin:empty:do")],
+    [Markup.button.callback("↩️ Cancel", "admin:config:cancel")],
+  ]);
+
+  await ctx.editMessageText(
+    "🧹 <b>Empty codes</b>\n\nThis will delete <b>all</b> stored codes from the database.\n\nAre you sure?",
+    { parse_mode: "HTML", reply_markup: keyboard.reply_markup, disable_web_page_preview: true }
+  );
+});
+
+bot.action("admin:empty:do", async (ctx) => {
+  if (ctx.from.id !== ADMIN_CHAT_ID) return ctx.answerCbQuery("Not allowed.");
+  await ctx.answerCbQuery("Deleting...");
+
+  const codesCol = getCollection(COLLECTIONS.CODES);
+  const res = await codesCol.deleteMany({});
+
+  const remaining = await codesCol.countDocuments({});
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback("Configure Required Channel(s)", "admin:config:channels")],
+    [Markup.button.callback("Set Category Prices", "admin:config:prices")],
+    [Markup.button.callback("Upload Payment QR (photo)", "admin:config:qr")],
+    [Markup.button.callback("Upload Codes (1 per line)", "admin:config:codes")],
+    [Markup.button.callback("🧹 Empty Codes", "admin:empty")],
+    [Markup.button.callback("🕒 Pending Requests", "admin:pending")],
+    [Markup.button.callback("View last payments", "admin:view:history")],
+    [Markup.button.callback("Export payments (CSV)", "admin:export")],
+  ]);
+
+  try {
+    await ctx.editMessageText(
+      `✅ Codes emptied successfully.\nDeleted: ${res.deletedCount}\nRemaining: ${remaining}`,
+      { reply_markup: keyboard.reply_markup, disable_web_page_preview: true }
+    );
+  } catch (_) {
+    await ctx.reply(
+      `✅ Codes emptied successfully.\nDeleted: ${res.deletedCount}\nRemaining: ${remaining}`,
+      { reply_markup: keyboard.reply_markup, disable_web_page_preview: true }
+    );
   }
 });
 
