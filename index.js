@@ -716,6 +716,13 @@ async function atomicSetOrderStatus(orderId, currentStatus, nextStatus, extraSet
 
 async function claimNCodes(category, orderId, qty) {
   const codes = getCollection(COLLECTIONS.CODES);
+  const availableCount = await codes.countDocuments({ category, available: true });
+
+  // If there aren't enough codes at accept time, don't partially claim.
+  if (availableCount < qty) {
+    return [];
+  }
+
   const claimed = [];
 
   for (let i = 0; i < qty; i++) {
