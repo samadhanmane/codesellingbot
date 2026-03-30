@@ -721,7 +721,16 @@ async function claimNCodes(category, orderId, qty) {
 
   for (let i = 0; i < qty; i++) {
     const res = await codes.findOneAndUpdate(
-      { category: cat, available: true },
+      {
+        $and: [
+          {
+            $or: [{ category: cat }, { category: String(cat) }],
+          },
+          {
+            $or: [{ available: true }, { available: { $exists: false } }],
+          },
+        ],
+      },
       {
         $set: {
           available: false,
@@ -1634,34 +1643,41 @@ bot.action(/^(admin:accept:)/, async (ctx) => {
   const category = Number(order.category);
   const claimed = await claimNCodes(category, orderId, reqQty);
 
-  // Only treat as out-of-stock if we could not claim even a single code.
-  if (claimed.length === 0) {
+  // If we can't claim the requested quantity, treat as out of stock.
+  if (claimed.length !== reqQty) {
+    // Release any partially claimed codes back to stock (so they can be sold again).
+    const ids = claimed.map((c) => c._id);
+    await releaseCodesByIds(ids);
+
+    const remaining = await getCollection(COLLECTIONS.CODES).countDocuments({
+      $and: [
+        { $or: [{ category }, { category: String(category) }] },
+        { $or: [{ available: true }, { available: { $exists: false } }] },
+      ],
+    });
+
     await orders.updateOne(
       { orderId },
-      { $set: { status: "fulfilled", deliveredCodes: [], decisionAt: now() } }
+      { $set: { status: "out_of_stock", deliveredCodes: [], decisionAt: now() } }
     );
 
     stopOrderTimer(orderId);
     clearUserStateByOrderId(orderId);
     await updateQrMessageForOrder(orderId, true);
 
+    await ctx.answerCbQuery("Not enough stock.");
     try {
       const msg = ctx.callbackQuery.message;
-      if (msg?.photo?.length) {
-        await ctx.editMessageCaption(
-          `✅ Payment successful\nOrder: ${orderId}\nDelivered code(s): null`
-        );
-      } else {
-        await ctx.editMessageText(
-          `✅ Payment successful\nOrder: ${orderId}\nDelivered code(s): null`
-        );
-      }
+      const adminText =
+        `❌ Not enough stock\nOrder: ${orderId}\nRequested: ${reqQty}\nRemaining: ${remaining}`;
+      if (msg?.photo?.length) await ctx.editMessageCaption(adminText);
+      else await ctx.editMessageText(adminText);
     } catch (_) {}
 
     try {
       await bot.telegram.sendMessage(
         order.userChatId,
-        `Payment accepted ✅\n\nYour code(s) (${order.category}):\nnull\n\nOrder: ${orderId}`
+        `Sorry ❌\nStock not available for ${order.category}.\nRequested: ${reqQty}\nTotal stock: ${remaining} units.\n\nOrder: ${orderId}\nPlease try again.`
       );
     } catch (_) {}
     return;
