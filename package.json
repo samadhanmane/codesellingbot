@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Telegram code selling bot with admin approval and MongoDB",
   "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node index.js"
   },

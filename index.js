@@ -1091,29 +1091,58 @@ bot.action(/^qty:(\d+):(1|2|5)$/, async (ctx) => {
     return;
   }
 
-  const expectedTotal = Math.round(unitPrice * qty * 100) / 100;
+  const totalAmount = Math.round(unitPrice * qty * 100) / 100;
 
   await ctx.answerCbQuery();
-  userStates.set(userId, {
-    category,
-    qty,
-    unitPrice,
-    expectedTotal,
-    expecting: "total_amount",
-    ui: { chatId: ctx.chat.id, messageId: ctx.callbackQuery.message.message_id, isPhoto: false },
-  });
 
-  const kb = Markup.inlineKeyboard([
-    [Markup.button.callback("🏠 Main Menu", "cancel:flow")],
-    [Markup.button.callback("📄 History", "history:open")],
-  ]);
-  await ctx.editMessageText(
-    `✅ <b>Quantity selected</b>\n\n` +
-      `<code>${qty}</code> codes of <code>${category}</code> off\n\n` +
-      `💳 <b>Total you must pay:</b> <code>${expectedTotal}</code>\n\n` +
-      `Now enter the exact total amount to continue.`,
-    { reply_markup: kb.reply_markup, parse_mode: "HTML", disable_web_page_preview: true }
+  // Create order immediately and show QR flow.
+  const orderId = generateOrderId();
+  const orderDoc = {
+    orderId,
+    userId,
+    userChatId: ctx.chat.id,
+    username: ctx.from.username || "",
+    category,
+    quantity: qty,
+    unitPrice,
+    totalAmount,
+    status: "qr_sent",
+    createdAt: now(),
+    expiresAt: new Date(Date.now() + ORDER_DURATION_MS),
+    utr: null,
+    screenshotFileId: null,
+    deliveredCodes: [],
+    decisionAt: null,
+    adminDecisionBy: null,
+    qrMessageChatId: null,
+    qrMessageId: null,
+    qrMessageIsPhoto: true,
+  };
+
+  const orders = getCollection(COLLECTIONS.ORDERS);
+  await orders.insertOne(orderDoc);
+
+  // Replace current message with a short loader.
+  try {
+    await ctx.editMessageText(
+      `🧾 <b>Order Created</b>\n\n` +
+        `🆔 <b>Order ID:</b> <code>${escapeHtml(orderId)}</code>\n` +
+        `💠 <b>Category:</b> <code>${category}</code> off\n` +
+        `🧮 <b>Qty:</b> <code>${qty}</code>\n` +
+        `💳 <b>Total:</b> <code>${totalAmount}</code>\n\n` +
+        `⏳ Loading payment QR...`,
+      { parse_mode: "HTML", disable_web_page_preview: true }
+    );
+  } catch (_) {}
+
+  const ui = await sendQrFlow(ctx, orderDoc);
+  await orders.updateOne(
+    { orderId },
+    { $set: { qrMessageChatId: ui.chatId, qrMessageId: ui.messageId, qrMessageIsPhoto: Boolean(ui.isPhoto) } }
   );
+
+  await startOrderLiveTimer(orderId);
+  userStates.set(userId, { orderId, expecting: null, ui });
 });
 
 bot.action(/^cancel:(ORD-)/, async (ctx) => {
@@ -1327,68 +1356,7 @@ bot.on("text", async (ctx, next) => {
       return;
     }
 
-    const expectedTotal = Math.round(state.unitPrice * qty * 100) / 100;
-    userStates.set(userId, {
-      ...state,
-      qty,
-      expectedTotal,
-      expecting: "total_amount",
-    });
-
-    const kb = Markup.inlineKeyboard([
-      [Markup.button.callback("🏠 Main Menu", "cancel:flow")],
-      [Markup.button.callback("📄 History", "history:open")],
-    ]);
-    await editOrSend(
-      ctx,
-      state.ui,
-      `✅ <b>Quantity confirmed</b>\n\nYou selected:\n• <code>${qty}</code> codes of <code>${escapeHtml(state.category)}</code>\n\n💳 <b>Expected total:</b> <code>${expectedTotal}</code>\n\nEnter the <b>exact</b> total amount to continue.`,
-      { reply_markup: kb.reply_markup, parse_mode: "HTML", disable_web_page_preview: true }
-    );
-    return;
-  }
-
-  // Total amount step
-  if (state.expecting === "total_amount") {
-    const raw = (ctx.message.text || "").trim();
-    const amount = Number(raw);
-    if (!Number.isFinite(amount)) {
-      await ctx.reply("Invalid amount. Please send a number.");
-      return;
-    }
-
-    const expectedTotal = Number(state.expectedTotal);
-    const matches = Math.round(amount * 100) === Math.round(expectedTotal * 100);
-    if (!matches) {
-      const kb = Markup.inlineKeyboard([
-        [Markup.button.callback("🏠 Main Menu", "cancel:flow")],
-        [Markup.button.callback("📄 History", "history:open")],
-      ]);
-      await editOrSend(
-        ctx,
-        state.ui,
-        `❌ <b>Wrong amount</b>\n\nExpected: <code>${expectedTotal}</code>\nYou entered: <code>${amount}</code>\n\nSend the <b>exact</b> total amount to continue.`,
-        { reply_markup: kb.reply_markup, parse_mode: "HTML", disable_web_page_preview: true }
-      );
-      return;
-    }
-
-    const stocks = await getStocks();
-    const stock = stocks.get(state.category) ?? 0;
-    if (stock < state.qty) {
-      const kb = Markup.inlineKeyboard([
-        [Markup.button.callback("🏠 Main Menu", "cancel:flow")],
-        [Markup.button.callback("📄 History", "history:open")],
-      ]);
-      await editOrSend(
-        ctx,
-        state.ui,
-        `🚫 <b>Not enough stock</b>\n\nRequested: <code>${state.qty}</code>\nTotal stock: <code>${stock}</code> units.\n\nStart again from <b>/start</b>.`,
-        { reply_markup: kb.reply_markup, parse_mode: "HTML", disable_web_page_preview: true }
-      );
-      userStates.delete(userId);
-      return;
-    }
+    const totalAmount = Math.round(state.unitPrice * qty * 100) / 100;
 
     const orderId = generateOrderId();
     const orderDoc = {
@@ -1397,9 +1365,9 @@ bot.on("text", async (ctx, next) => {
       userChatId: ctx.chat.id,
       username: ctx.from.username || "",
       category: state.category,
-      quantity: state.qty,
+      quantity: qty,
       unitPrice: state.unitPrice,
-      totalAmount: expectedTotal,
+      totalAmount,
       status: "qr_sent",
       createdAt: now(),
       expiresAt: new Date(Date.now() + ORDER_DURATION_MS),
@@ -1416,40 +1384,29 @@ bot.on("text", async (ctx, next) => {
     const orders = getCollection(COLLECTIONS.ORDERS);
     await orders.insertOne(orderDoc);
 
-    await ctx.answerCbQuery?.();
+    userStates.delete(userId);
 
-    // Replace quantity/amount message with loader
-    try {
-      await editOrSend(
-        ctx,
-        state.ui,
-        `Preparing order... ⏳\nOrder: ${orderId}`,
-        { reply_markup: Markup.inlineKeyboard([[Markup.button.callback("Cancel ❌", `cancel:${orderId}`)]]).reply_markup }
-      );
-    } catch (_) {}
-
-    const ui = await sendQrFlow(ctx, orderDoc);
-
-    // Store QR message ids for the live timer/edits
-    await orders.updateOne(
-      { orderId },
-      {
-        $set: {
-          qrMessageChatId: ui.chatId,
-          qrMessageId: ui.messageId,
-          qrMessageIsPhoto: ui.isPhoto || ui.isPhoto === true,
-        },
-      }
+    // Update the same message with loader text before sending the QR.
+    await editOrSend(
+      ctx,
+      state.ui,
+      `🧾 <b>Order Created</b>\n\n` +
+        `🆔 <b>Order ID:</b> <code>${escapeHtml(orderId)}</code>\n` +
+        `💠 <b>Category:</b> <code>${escapeHtml(state.category)}</code> off\n` +
+        `🧮 <b>Qty:</b> <code>${qty}</code>\n` +
+        `💳 <b>Total:</b> <code>${totalAmount}</code>\n\n` +
+        `⏳ Loading payment QR...`,
+      { parse_mode: "HTML", disable_web_page_preview: true }
     );
 
-    // Start live timer
-    await startOrderLiveTimer(orderId);
+    const ui = await sendQrFlow(ctx, orderDoc);
+    await orders.updateOne(
+      { orderId },
+      { $set: { qrMessageChatId: ui.chatId, qrMessageId: ui.messageId, qrMessageIsPhoto: Boolean(ui.isPhoto) } }
+    );
 
-    userStates.set(userId, {
-      orderId,
-      expecting: null,
-      ui,
-    });
+    await startOrderLiveTimer(orderId);
+    userStates.set(userId, { orderId, expecting: null, ui });
     return;
   }
 
@@ -1897,10 +1854,59 @@ bot.command("start_admin", async (ctx) => {
     [Markup.button.callback("Set Category Prices", "admin:config:prices")],
     [Markup.button.callback("Upload Payment QR (photo)", "admin:config:qr")],
     [Markup.button.callback("Upload Codes (1 per line)", "admin:config:codes")],
+    [Markup.button.callback("🕒 Pending Requests", "admin:pending")],
     [Markup.button.callback("View last payments", "admin:view:history")],
     [Markup.button.callback("Export payments (CSV)", "admin:export")],
   ]);
   await ctx.reply("Admin panel:", keyboard);
+});
+
+bot.action("admin:pending", async (ctx) => {
+  if (ctx.from.id !== ADMIN_CHAT_ID) return ctx.answerCbQuery("Not allowed.");
+  await ctx.answerCbQuery("Loading pending...");
+
+  const orders = getCollection(COLLECTIONS.ORDERS);
+  const list = await orders.find({ status: "awaiting_admin" }).sort({ submittedAt: 1, createdAt: 1 }).limit(25).toArray();
+
+  if (!list.length) {
+    await ctx.editMessageText("✅ No pending requests right now.");
+    return;
+  }
+
+  await ctx.editMessageText(`🕒 Pending requests: ${list.length}\n\nI will send them below...`);
+
+  for (const o of list) {
+    const acceptCb = `admin:accept:${o.orderId}`;
+    const declineCb = `admin:decline:${o.orderId}`;
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback("✅ Accept", acceptCb), Markup.button.callback("❌ Decline", declineCb)],
+    ]);
+
+    const caption =
+      `🧾 <b>Pending Payment</b>\n\n` +
+      `🆔 <b>Order:</b> <code>${escapeHtml(o.orderId)}</code>\n` +
+      `👤 <b>User:</b> ${o.username ? "@" + escapeHtml(o.username) : "<i>(no username)</i>"}\n` +
+      `🧑‍💻 <b>User ID:</b> <code>${escapeHtml(o.userId)}</code>\n` +
+      `💠 <b>Category:</b> <code>${escapeHtml(o.category)}</code> off\n` +
+      `🧮 <b>Qty:</b> <code>${escapeHtml(o.quantity || 1)}</code>\n` +
+      `💳 <b>Total:</b> <code>${escapeHtml(o.totalAmount || 0)}</code>\n` +
+      `🔎 <b>UTR:</b> <code>${escapeHtml(o.utr || "")}</code>\n`;
+
+    try {
+      if (o.screenshotFileId) {
+        await bot.telegram.sendPhoto(ADMIN_CHAT_ID, o.screenshotFileId, {
+          caption,
+          parse_mode: "HTML",
+          ...keyboard,
+        });
+      } else {
+        await bot.telegram.sendMessage(ADMIN_CHAT_ID, caption, {
+          parse_mode: "HTML",
+          ...keyboard,
+        });
+      }
+    } catch (_) {}
+  }
 });
 
 bot.action("admin:config:channels", async (ctx) => {
@@ -1986,6 +1992,7 @@ bot.action("admin:config:cancel", async (ctx) => {
     [Markup.button.callback("Set Category Prices", "admin:config:prices")],
     [Markup.button.callback("Upload Payment QR (photo)", "admin:config:qr")],
     [Markup.button.callback("Upload Codes (1 per line)", "admin:config:codes")],
+    [Markup.button.callback("🕒 Pending Requests", "admin:pending")],
     [Markup.button.callback("View last payments", "admin:view:history")],
     [Markup.button.callback("Export payments (CSV)", "admin:export")],
   ]);
