@@ -512,14 +512,23 @@ async function sendQrFlow(ctx, order) {
   const chatId = ctx.chat.id;
   const expiresText = formatRemainingMMSS(order.expiresAt);
 
+  const orderId = escapeHtml(order.orderId);
+  const category = escapeHtml(order.category);
+  const qty = escapeHtml(order.quantity || 1);
+  const total = escapeHtml(order.totalAmount || 0);
+
   const caption =
-    `Order: ${order.orderId}\n` +
-    `Category: ${order.category} off\n` +
-    `Quantity: ${order.quantity || 1}\n` +
-    `Total pay: ${order.totalAmount || 0}\n` +
-    `Time left: ${expiresText}\n` +
-    `\n⏳ Waiting for payment${dotsAt(0)}\n\n` +
-    PAYMENT_INSTRUCTIONS_TEXT;
+    `🧾 <b>ORDER</b>\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `🆔 <b>Order ID:</b> <code>${orderId}</code>\n` +
+    `💠 <b>Category:</b> <code>${category}</code> off\n` +
+    `🧮 <b>Qty:</b> <code>${qty}</code>\n` +
+    `💳 <b>Total:</b> <code>${total}</code>\n` +
+    `⏱️ <b>Time left:</b> <code>${escapeHtml(expiresText)}</code>\n` +
+    `━━━━━━━━━━━━━━\n\n` +
+    `🟨 <b>NEXT STEP</b>\n` +
+    `➡️ <b>Send payment, then tap:</b> <b>Payment Done ✅</b>\n\n` +
+    `ℹ️ ${escapeHtml(PAYMENT_INSTRUCTIONS_TEXT)}`;
 
   const keyboard = Markup.inlineKeyboard([
     [
@@ -532,6 +541,7 @@ async function sendQrFlow(ctx, order) {
   if (qr?.type === "file_id") {
     const sent = await ctx.replyWithPhoto(qr.fileId, {
       caption,
+      parse_mode: "HTML",
       ...keyboard,
     });
     return { chatId, messageId: sent.message_id, isPhoto: true };
@@ -540,13 +550,14 @@ async function sendQrFlow(ctx, order) {
   if (qr?.type === "image_url") {
     const sent = await ctx.replyWithPhoto(qr.url, {
       caption,
+      parse_mode: "HTML",
       ...keyboard,
     });
     return { chatId, messageId: sent.message_id, isPhoto: true };
   }
 
   // Fallback: text only
-  const sent = await ctx.reply(caption, keyboard);
+  const sent = await ctx.reply(caption, { parse_mode: "HTML", ...keyboard });
   return { chatId, messageId: sent.message_id };
 }
 
@@ -564,35 +575,61 @@ async function updateQrMessageForOrder(orderId, forced = false) {
   const qty = order.quantity || 1;
   const total = order.totalAmount ?? 0;
 
-  let statusLine = "";
-  if (order.status === "qr_sent") statusLine = `⏳ Waiting for payment${dots}`;
-  if (order.status === "awaiting_utr") statusLine = `📥 Send your UTR${dots}`;
-  if (order.status === "awaiting_screenshot") statusLine = `🧾 Send payment screenshot${dots}`;
-  if (order.status === "awaiting_admin") statusLine = `✅ Submitted. Waiting admin approval${dots}`;
-  if (order.status === "accepted_processing") statusLine = `✅ Accepted. Preparing code${dots}`;
+  const orderIdHtml = escapeHtml(order.orderId);
+  const categoryHtml = escapeHtml(order.category);
+  const qtyHtml = escapeHtml(qty);
+  const totalHtml = escapeHtml(total);
+  const remainingHtml = escapeHtml(remaining);
 
-  if (order.status === "out_of_stock") statusLine = `❌ Out of stock for requested quantity`;
-  if (order.status === "declined") statusLine = `❌ Payment declined by admin`;
-  if (order.status === "cancelled") statusLine = `❌ Purchase cancelled`;
-  if (order.status === "expired") statusLine = `⌛ Order expired`;
-  if (order.status === "fulfilled") statusLine = `✅ Payment accepted`;
+  let statusTitle = "";
+  let statusBody = "";
+
+  if (order.status === "qr_sent") {
+    statusTitle = `🟨 <b>NEXT STEP</b>`;
+    statusBody = `➡️ <b>Make payment</b>, then tap <b>Payment Done ✅</b>${escapeHtml(dots)}`;
+  } else if (order.status === "awaiting_utr") {
+    statusTitle = `🟦 <b>ACTION REQUIRED</b>`;
+    statusBody = `📥 <b>SEND UTR</b> (payment reference) as a text message${escapeHtml(dots)}`;
+  } else if (order.status === "awaiting_screenshot") {
+    statusTitle = `🟦 <b>ACTION REQUIRED</b>`;
+    statusBody = `📸 <b>SEND PAYMENT SCREENSHOT</b> as a photo${escapeHtml(dots)}`;
+  } else if (order.status === "awaiting_admin") {
+    statusTitle = `🟩 <b>SUBMITTED</b>`;
+    statusBody = `✅ <b>Transaction completed from your side.</b>\n⏳ Waiting for admin approval${escapeHtml(dots)}`;
+  } else if (order.status === "accepted_processing") {
+    statusTitle = `🟩 <b>APPROVED</b>`;
+    statusBody = `✅ Approved. Preparing your code(s)${escapeHtml(dots)}`;
+  } else if (order.status === "fulfilled") {
+    statusTitle = `🟩 <b>DONE</b>`;
+    statusBody = `🎉 Payment accepted. Code(s) delivered.`;
+  } else if (order.status === "declined") {
+    statusTitle = `🟥 <b>DECLINED</b>`;
+    statusBody = `❌ Payment declined by admin.`;
+  } else if (order.status === "cancelled") {
+    statusTitle = `🟥 <b>CANCELLED</b>`;
+    statusBody = `🚫 Order cancelled.`;
+  } else if (order.status === "expired") {
+    statusTitle = `🟥 <b>EXPIRED</b>`;
+    statusBody = `⌛ Order expired.`;
+  } else if (order.status === "out_of_stock") {
+    statusTitle = `🟥 <b>FAILED</b>`;
+    statusBody = `🚫 Out of stock for requested quantity.`;
+  } else {
+    statusTitle = `📌 <b>Status</b>`;
+    statusBody = escapeHtml(order.status);
+  }
 
   const caption =
-    `Order: ${order.orderId}\n` +
-    `Category: ${order.category} off\n` +
-    `Quantity: ${qty}\n` +
-    `Total pay: ${total}\n` +
-    `Time left: ${remaining}\n\n` +
-    statusLine + "\n\n" +
-    (order.status === "qr_sent"
-      ? PAYMENT_INSTRUCTIONS_TEXT
-      : order.status === "awaiting_utr"
-        ? "Send your UTR as a text message."
-        : order.status === "awaiting_screenshot"
-          ? "Send your payment screenshot/photo."
-          : order.status === "awaiting_admin"
-            ? "Please wait. Admin will respond shortly."
-            : "");
+    `🧾 <b>ORDER</b>\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `🆔 <b>Order ID:</b> <code>${orderIdHtml}</code>\n` +
+    `💠 <b>Category:</b> <code>${categoryHtml}</code> off\n` +
+    `🧮 <b>Qty:</b> <code>${qtyHtml}</code>\n` +
+    `💳 <b>Total:</b> <code>${totalHtml}</code>\n` +
+    `⏱️ <b>Time left:</b> <code>${remainingHtml}</code>\n` +
+    `━━━━━━━━━━━━━━\n\n` +
+    `${statusTitle}\n` +
+    `${statusBody}`;
 
   // Keyboard depends on the stage
   let keyboard = undefined;
@@ -620,7 +657,9 @@ async function updateQrMessageForOrder(orderId, forced = false) {
 
   if (!ui.messageId || !ui.chatId) return;
 
-  const extra = keyboard ? { reply_markup: keyboard, disable_web_page_preview: true } : { disable_web_page_preview: true };
+  const extra = keyboard
+    ? { reply_markup: keyboard, disable_web_page_preview: true, parse_mode: "HTML" }
+    : { disable_web_page_preview: true, parse_mode: "HTML" };
 
   if (ui.isPhoto) {
     try {
@@ -725,6 +764,71 @@ function parseCsvCodes(csvText) {
   }
 
   return [...new Set(codes)];
+}
+
+async function importCodesToDb(rawCodes, ctx) {
+  const codesCol = getCollection(COLLECTIONS.CODES);
+
+  const normalized = (rawCodes || []).map((c) => String(c || "").trim().toUpperCase()).filter(Boolean);
+  const totalLines = normalized.length;
+  const uniqueCodes = [...new Set(normalized)];
+  const duplicateInUpload = totalLines - uniqueCodes.length;
+
+  // Find codes already present in DB
+  const existing = await codesCol
+    .find({ code: { $in: uniqueCodes } }, { projection: { code: 1 } })
+    .toArray();
+  const existingSet = new Set(existing.map((d) => d.code));
+
+  const newOnes = uniqueCodes.filter((c) => !existingSet.has(c));
+  const alreadyPresent = uniqueCodes.filter((c) => existingSet.has(c));
+
+  // Route + validate by prefix
+  const toInsert = [];
+  const unknownPrefix = [];
+  for (const code of newOnes) {
+    const lower = code.toLowerCase();
+    const prefix = Object.keys(PREFIX_TO_CATEGORY).find((p) => lower.startsWith(p));
+    if (!prefix) {
+      unknownPrefix.push(code);
+      continue;
+    }
+    const category = PREFIX_TO_CATEGORY[prefix];
+    toInsert.push({
+      code,
+      category,
+      available: true,
+      soldOrderId: null,
+      soldAt: null,
+    });
+  }
+
+  let inserted = 0;
+  if (toInsert.length) {
+    const operations = toInsert.map((doc) => ({
+      insertOne: { document: doc },
+    }));
+
+    // ordered:false so one duplicate doesn't kill batch (though we pre-filtered).
+    const res = await codesCol.bulkWrite(operations, { ordered: false });
+    inserted = res.insertedCount || 0;
+  }
+
+  const sample = (arr) => arr.slice(0, 10).join(", ");
+
+  await ctx.reply(
+    `✅ Code import summary\n\n` +
+      `📄 Lines received: ${totalLines}\n` +
+      `🔁 Duplicate lines in upload: ${duplicateInUpload}\n` +
+      `🚫 Already present (skipped): ${alreadyPresent.length}\n` +
+      `❓ Unknown prefix (skipped): ${unknownPrefix.length}\n` +
+      `📥 Inserted: ${inserted}\n\n` +
+      (alreadyPresent.length ? `Already present examples: ${sample(alreadyPresent)}\n` : "") +
+      (unknownPrefix.length ? `Unknown prefix examples: ${sample(unknownPrefix)}\n` : ""),
+    { disable_web_page_preview: true }
+  );
+
+  return { inserted, alreadyPresent, unknownPrefix, duplicateInUpload };
 }
 
 async function downloadTelegramFile(fileId) {
@@ -1276,40 +1380,8 @@ bot.on("text", async (ctx, next) => {
       return;
     }
 
-    const toInsert = [];
-    for (const code of codes) {
-      const lower = code.toLowerCase();
-      const prefix = Object.keys(PREFIX_TO_CATEGORY).find((p) => lower.startsWith(p));
-      if (!prefix) continue; // ignore unknown prefixes
-      const category = PREFIX_TO_CATEGORY[prefix];
-      toInsert.push({
-        code,
-        category,
-        available: true,
-        soldOrderId: null,
-        soldAt: null,
-      });
-    }
-
-    if (toInsert.length === 0) {
-      await ctx.reply("Codes found, but none matched prefixes (svi/svc/svd/svh).");
-      return;
-    }
-
-    const codesCol = getCollection(COLLECTIONS.CODES);
-    const operations = toInsert.map((doc) => ({
-      updateOne: {
-        filter: { code: doc.code },
-        update: { $setOnInsert: doc },
-        upsert: true,
-      },
-    }));
-
-    const res = await codesCol.bulkWrite(operations, { ordered: false });
-    const inserted = (res.upsertedCount || 0) + (res.insertedCount || 0);
-
+    await importCodesToDb(codes, ctx);
     adminStates.delete(userId);
-    await ctx.reply(`Import finished ✅\nParsed ${codes.length} lines.\nInserted ~${inserted} codes.`);
     return;
   }
 
@@ -1505,6 +1577,8 @@ bot.on("photo", async (ctx, next) => {
     adminDecisionBy: null,
   });
   userStates.delete(userId);
+  // User flow is complete after screenshot submission.
+  stopOrderTimer(orderId);
   await updateQrMessageForOrder(orderId, true);
 
   // Notify admin with accept/decline buttons
@@ -1555,7 +1629,7 @@ bot.action(/^(admin:accept:)/, async (ctx) => {
   );
   if (!ok) return ctx.answerCbQuery("Already processed or not pending.");
 
-  const reqQty = order.quantity || 1;
+  const reqQty = Number(order.quantity) || 1;
   const claimed = await claimNCodes(order.category, orderId, reqQty);
 
   if (claimed.length !== reqQty) {
@@ -1575,13 +1649,17 @@ bot.action(/^(admin:accept:)/, async (ctx) => {
     clearUserStateByOrderId(orderId);
     await updateQrMessageForOrder(orderId, true);
 
-    await ctx.answerCbQuery("No codes left.");
+    await ctx.answerCbQuery("Not enough stock.");
     try {
       const msg = ctx.callbackQuery.message;
       if (msg?.photo?.length) {
-        await ctx.editMessageCaption("Admin decision: Not enough stock.");
+        await ctx.editMessageCaption(
+          `❌ Not enough stock\nOrder: ${orderId}\nRequested: ${reqQty}\nRemaining: ${remaining}`
+        );
       } else {
-        await ctx.editMessageText("Admin decision: Not enough stock.");
+        await ctx.editMessageText(
+          `❌ Not enough stock\nOrder: ${orderId}\nRequested: ${reqQty}\nRemaining: ${remaining}`
+        );
       }
     } catch (_) {}
 
@@ -1614,10 +1692,19 @@ bot.action(/^(admin:accept:)/, async (ctx) => {
   await ctx.answerCbQuery("Accepted.");
   try {
     const msg = ctx.callbackQuery.message;
+    const codesPreview = codesStr.slice(0, 25).map((c) => `- ${c}`).join("\n");
+    const adminText =
+      `✅ Payment successful\n` +
+      `Order: ${orderId}\n` +
+      `User: ${order.username ? "@" + order.username : "(no username)"} (${order.userId})\n` +
+      `Category: ${order.category} off x${reqQty}\n` +
+      `Total: ${order.totalAmount || 0}\n` +
+      `UTR: ${order.utr || ""}\n\n` +
+      `Delivered code(s):\n${codesPreview}`;
     if (msg?.photo?.length) {
-      await ctx.editMessageCaption(`Admin decision: Accepted\nOrder: ${orderId}`);
+      await ctx.editMessageCaption(adminText);
     } else {
-      await ctx.editMessageText(`Admin decision: Accepted\nOrder: ${orderId}`);
+      await ctx.editMessageText(adminText);
     }
   } catch (_) {}
 
@@ -2036,39 +2123,7 @@ bot.on("document", async (ctx) => {
     return;
   }
 
-  const toInsert = [];
-  for (const code of codes) {
-    const lower = code.toLowerCase();
-    const prefix = Object.keys(PREFIX_TO_CATEGORY).find((p) => lower.startsWith(p));
-    if (!prefix) continue; // ignore unknown prefixes
-    const category = PREFIX_TO_CATEGORY[prefix];
-    toInsert.push({
-      code,
-      category,
-      available: true,
-      soldOrderId: null,
-      soldAt: null,
-    });
-  }
-
-  if (toInsert.length === 0) {
-    await ctx.reply("Codes found, but none matched prefixes (svi/svc/svd/svh).");
-    return;
-  }
-
-  const codesCol = getCollection(COLLECTIONS.CODES);
-  const operations = toInsert.map((doc) => ({
-    updateOne: {
-      filter: { code: doc.code },
-      update: { $setOnInsert: doc },
-      upsert: true,
-    },
-  }));
-
-  const res = await codesCol.bulkWrite(operations, { ordered: false });
-  const inserted = (res.upsertedCount || 0) + (res.insertedCount || 0);
-  await ctx.reply(`Import finished. Parsed ${codes.length} codes. Inserted ~${inserted}.`);
-
+  await importCodesToDb(codes, ctx);
   adminStates.delete(ctx.from.id);
 });
 
