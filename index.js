@@ -1,8 +1,10 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const http = require("http");
 const https = require("https");
 const dotenv = require("dotenv");
+const express = require("express");
 const { Telegraf, Markup } = require("telegraf");
 
 const { connectDb, getCollection, COLLECTIONS, closeDb } = require("./db");
@@ -25,6 +27,39 @@ if (!ADMIN_CHAT_ID) throw new Error("Missing ADMIN_CHAT_ID in .env");
 if (!MONGODB_URI) throw new Error("Missing MONGODB_URI in .env");
 
 const bot = new Telegraf(BOT_TOKEN);
+
+// Render Web Service needs an HTTP server listening on PORT.
+// The bot itself runs with polling; this server is only for Render uptime checks.
+let dbReady = false;
+function startHealthServer() {
+  const app = express();
+  app.get("/", (_req, res) => res.status(200).send("OK"));
+  app.get("/healthz", (_req, res) => res.status(200).json({ ok: true, dbReady }));
+  const port = Number(process.env.PORT) || 3000;
+  app.listen(port, () => {
+    console.log(`Health server listening on port ${port}`);
+  });
+
+  // Best-effort keep-alive: ping local health endpoint every 4 minutes.
+  // Helps some free-tier setups that suspend on inactivity.
+  setInterval(() => {
+    try {
+      const req = http.get(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/healthz",
+          timeout: 2000,
+        },
+        (res) => {
+          res.resume();
+        }
+      );
+      req.on("error", () => {});
+      req.on("timeout", () => req.destroy());
+    } catch (_) {}
+  }, 4 * 60 * 1000);
+}
 
 // Central error handler so the bot doesn't silently fail.
 bot.catch((err, ctx) => {
@@ -2031,7 +2066,9 @@ bot.on("document", async (ctx) => {
 });
 
 async function main() {
+  startHealthServer();
   await connectDb(MONGODB_URI);
+  dbReady = true;
   bot.launch().then(() => {
     console.log("Bot started.");
   });
